@@ -1,3 +1,9 @@
+---
+title: chatbot_project
+app_file: chatbot_project/app/gradio_app.py
+sdk: gradio
+sdk_version: 6.20.0
+---
 # Personalised Transformer Chatbot
 
 This repository contains the reference implementation for a personalised dialogue system built with a transformer backbone and Gradio demo interface.
