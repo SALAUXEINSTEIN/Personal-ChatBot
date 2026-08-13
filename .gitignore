@@ -12,29 +12,45 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
-# Logs and runtime files
+# Logs
 *.log
 app/feedback_log.csv
 
-# Dataset outputs and checkpoints
+# Datasets / generated data
 data/processed/
+data/cache/
+
+# Large raw datasets
+data/raw/
+
+# Model checkpoints / weights
 checkpoints/
 *.pt
 *.pth
+*.bin
+*.safetensors
+
+# Hugging Face caches
+.cache/
+huggingface/
+.huggingface/
+
+# Experiment tracking
+wandb/
 
 # Distribution / packaging
 build/
 dist/
 *.egg-info/
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
-# Python cache
+# Testing / coverage
 .pytest_cache/
 .coverage
 
-# IDEs
+# IDE
 .vscode/
 .idea/

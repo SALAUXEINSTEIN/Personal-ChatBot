@@ -47,39 +47,69 @@ def classify_formality(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# (b) Zero-shot topic classifier (DeBERTa-v3, Laurer et al. 2022)
+# (b) Zero-shot topic classifier (DeBERTa-v3)
 # ---------------------------------------------------------------------------
+
 DEFAULT_TOPICS = [
-    "family", "work", "hobbies", "food", "travel", "health",
-    "education", "entertainment", "sports", "technology",
+    "family",
+    "work",
+    "hobbies",
+    "food",
+    "travel",
+    "health",
+    "education",
+    "entertainment",
+    "sports",
+    "technology",
 ]
 
 
 @lru_cache(maxsize=1)
 def _get_zero_shot_pipeline():
     from transformers import pipeline
+
     return pipeline(
         "zero-shot-classification",
         model="MoritzLaurer/deberta-v3-base-zeroshot-v2.0",
+        device=-1,  # CPU
     )
 
 
-def classify_topic(text: str, candidate_topics: List[str] = None) -> Dict[str, float]:
-    """
-    Returns a probability distribution over candidate_topics for `text`.
-    Falls back to a uniform distribution if the zero-shot model cannot be
-    loaded (e.g. no network access in a constrained environment) so the
-    rest of the pipeline can still run end-to-end.
-    """
+def classify_topic(
+    text: str,
+    candidate_topics: List[str] = None
+) -> Dict[str, float]:
+
     candidate_topics = candidate_topics or DEFAULT_TOPICS
+
+    # Prevent extremely long inputs from making zero-shot classification
+    # unnecessarily slow.
+    text = text.strip()
+
+    if len(text) > 1500:
+        text = text[-1500:]
+
     try:
         clf = _get_zero_shot_pipeline()
-        result = clf(text, candidate_labels=candidate_topics, multi_label=False)
-        return dict(zip(result["labels"], result["scores"]))
-    except Exception:
-        uniform = 1.0 / len(candidate_topics)
-        return {t: uniform for t in candidate_topics}
 
+        result = clf(
+            text,
+            candidate_labels=candidate_topics,
+            multi_label=False,
+            hypothesis_template="This conversation is about {}."
+        )
+
+        return dict(zip(result["labels"], result["scores"]))
+
+    except Exception as e:
+        print(f"Warning: topic classification failed: {e}")
+
+        uniform = 1.0 / len(candidate_topics)
+
+        return {
+            topic: uniform
+            for topic in candidate_topics
+        }
 
 # ---------------------------------------------------------------------------
 # (c) VADER sentiment

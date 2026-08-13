@@ -5,6 +5,7 @@ Computes, for a given system variant on the PersonaChat test set:
     - Perplexity (PPL)
     - BLEU-1/2/4 (NLTK)
     - ROUGE-L (Hugging Face `evaluate` library)
+    
     - Persona Consistency (C-Score) via NLI entailment
     - Distinct-1/2 (response diversity)
 Bootstrap resampling (10,000 iterations) is used for 95% CIs.
