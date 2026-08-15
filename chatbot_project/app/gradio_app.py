@@ -431,7 +431,6 @@ def launch_app(system):
                 chatbot_ui = gr.Chatbot(
                     label="Conversation",
                     height=420,
-                    type="messages",
                 )
 
                 msg_box = gr.Textbox(
