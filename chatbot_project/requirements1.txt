@@ -1,0 +1,16 @@
+# Core libraries specified in Section 3.6.1
+torch>=2.2
+transformers>=4.40
+datasets
+evaluate
+sentence-transformers
+nltk
+gradio>=4.0
+
+# Supporting libraries used across the pipeline
+vaderSentiment          # sentiment annotation (Hutto & Gilbert, 2014)
+scikit-learn            # bootstrap / stats helpers
+numpy
+pandas
+wandb                   # experiment tracking (Section 3.6.3)
+rouge_score             # backing library for evaluate's ROUGE-L

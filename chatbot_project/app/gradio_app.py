@@ -1,14 +1,23 @@
 """
 Gradio deployment interface — Personalised Transformer Chatbot.
 
-Deployment model:
+Deployment architecture
+-----------------------
+The chatbot model is hosted on Hugging Face and accessed through the
+Hugging Face Inference API.
+
+Render runs only the Gradio interface.
+
+Required Render environment variables:
+    HF_TOKEN = your Hugging Face access token
+
+Optional:
+    HF_MODEL = Hugging Face model ID
+
+Default model:
     sebastiantrbl/DialoGPT-finetuned-daily-dialog
 
-This version loads the Hugging Face Transformer model directly.
-It does not require a local Stage-1 checkpoint or Stage-2 UPE/DST
-checkpoint.
-
-The interface preserves:
+The application includes:
     1. Chat window
     2. User persona/profile panel
     3. Persona-mode toggle
@@ -21,17 +30,24 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import socket
 from datetime import datetime
 
 import gradio as gr
+from huggingface_hub import InferenceClient
 
 
 # ============================================================
-# MODEL
+# CONFIGURATION
 # ============================================================
 
-MODEL_NAME = "sebastiantrbl/DialoGPT-finetuned-daily-dialog"
+MODEL_NAME = os.environ.get(
+    "HF_MODEL",
+    "sebastiantrbl/DialoGPT-finetuned-daily-dialog",
+)
+
+HF_TOKEN_ENV_NAME = "HF_TOKEN"
+
+FEEDBACK_LOG_PATH = "./app/feedback_log.csv"
 
 
 # ============================================================
@@ -39,6 +55,13 @@ MODEL_NAME = "sebastiantrbl/DialoGPT-finetuned-daily-dialog"
 # ============================================================
 
 class SimpleDialogueState:
+    """
+    Lightweight dialogue state used by the deployment interface.
+
+    This keeps the interface compatible with the dissertation design
+    while the deployed model is accessed through Hugging Face.
+    """
+
     def __init__(self):
         self.current_topic = ""
         self.current_intent = ""
@@ -50,7 +73,7 @@ class SimpleDialogueState:
 
 
 # ============================================================
-# DISCLAIMER
+# RESEARCH DISCLAIMER
 # ============================================================
 
 DISCLAIMER = (
@@ -58,29 +81,45 @@ DISCLAIMER = (
     "research system (MSc dissertation project). Responses may contain errors, "
     "inconsistencies, or biases, and this system is **not** designed for sensitive "
     "applications (e.g. medical, legal, or crisis support). No automated decisions "
-    "are made based on its outputs. Participation in feedback collection is voluntary "
-    "and anonymised (Section 3.9)."
+    "are made based on its outputs. Participation in feedback collection is "
+    "voluntary and anonymised (Section 3.9)."
 )
 
 
 # ============================================================
-# FEEDBACK
+# FEEDBACK LOGGING
 # ============================================================
 
-FEEDBACK_LOG_PATH = "./app/feedback_log.csv"
+def log_feedback(
+    participant_code,
+    session_id,
+    turn_idx,
+    rating,
+    comment,
+):
+    """
+    Save participant feedback to CSV.
 
+    The file is stored on the Render instance.
+    """
 
-def log_feedback(participant_code, session_id, turn_idx, rating, comment):
+    feedback_directory = os.path.dirname(FEEDBACK_LOG_PATH)
 
-    os.makedirs(os.path.dirname(FEEDBACK_LOG_PATH), exist_ok=True)
+    if feedback_directory:
+        os.makedirs(
+            feedback_directory,
+            exist_ok=True,
+        )
 
-    file_exists = os.path.isfile(FEEDBACK_LOG_PATH)
+    file_exists = os.path.isfile(
+        FEEDBACK_LOG_PATH
+    )
 
     with open(
         FEEDBACK_LOG_PATH,
         "a",
         newline="",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as f:
 
         writer = csv.writer(f)
@@ -108,41 +147,62 @@ def log_feedback(participant_code, session_id, turn_idx, rating, comment):
 
 
 # ============================================================
-# MODEL SYSTEM
+# HUGGING FACE CHATBOT
 # ============================================================
 
 class HuggingFaceChatbot:
+    """
+    Chatbot wrapper around the Hugging Face Inference API.
 
-    def __init__(self, model_name=MODEL_NAME, device=None):
+    The Hugging Face token is NEVER hard-coded.
+    It must be supplied through the HF_TOKEN environment variable.
+    """
 
-        import torch
-        from transformers import AutoTokenizer, AutoModelForCausalLM
+    def __init__(
+        self,
+        model_name: str = MODEL_NAME,
+    ):
 
         self.model_name = model_name
 
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+        # ----------------------------------------------------
+        # Read token securely from environment
+        # ----------------------------------------------------
 
-        self.device = device
+        hf_token = os.environ.get(
+            HF_TOKEN_ENV_NAME
+        )
 
-        print("=" * 60)
-        print("Loading deployment model")
-        print(f"Model: {model_name}")
-        print(f"Device: {device}")
-        print("=" * 60)
+        if not hf_token:
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            raise RuntimeError(
+                "HF_TOKEN is not configured. "
+                "Add HF_TOKEN as an environment variable "
+                "in the Render service."
+            )
 
-        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+        print("=" * 70)
+        print("Initialising Hugging Face deployment")
+        print(f"Model: {self.model_name}")
+        print("Hugging Face token: configured")
+        print("=" * 70)
 
-        self.model.to(device)
-        self.model.eval()
+        # ----------------------------------------------------
+        # Hugging Face client
+        # ----------------------------------------------------
 
-        # DialoGPT does not normally have a pad token.
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.client = InferenceClient(
+            api_key=hf_token,
+            provider="auto",
+        )
 
-        print("Model loaded successfully.")
+        print(
+            "Hugging Face InferenceClient initialised successfully."
+        )
+
+    # ========================================================
+    # GENERATE RESPONSE
+    # ========================================================
 
     def generate_response(
         self,
@@ -151,130 +211,119 @@ class HuggingFaceChatbot:
         persona_enabled=True,
     ):
 
-        import torch
-
         # ----------------------------------------------------
-        # Build conversation context
+        # Build system instruction
         # ----------------------------------------------------
 
-        context_parts = []
-
-        # Add persona information if enabled
         if persona_enabled and persona_sentences:
 
-            persona_text = " ".join(persona_sentences)
-
-            context_parts.append(
-                f"Persona: {persona_text}"
+            persona_text = " ".join(
+                persona_sentences
             )
 
-        # Add previous conversation
-        if raw_history:
-
-            context_parts.extend(raw_history)
-
-        prompt = "\n".join(context_parts)
-
-        # ----------------------------------------------------
-        # Tokenize
-        # ----------------------------------------------------
-
-        inputs = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=512,
-        )
-
-        inputs = {
-            key: value.to(self.device)
-            for key, value in inputs.items()
-        }
-
-        # ----------------------------------------------------
-        # Generate
-        # ----------------------------------------------------
-
-        with torch.no_grad():
-
-            output_ids = self.model.generate(
-                **inputs,
-
-                max_new_tokens=80,
-
-                do_sample=True,
-
-                temperature=0.8,
-
-                top_p=0.92,
-
-                top_k=50,
-
-                repetition_penalty=1.1,
-
-                pad_token_id=self.tokenizer.eos_token_id,
-
+            system_instruction = (
+                "You are a personalised conversational assistant. "
+                "Use the user's persona information when it is relevant "
+                "to the conversation. Do not mention the persona explicitly "
+                "unless the user asks about it. Respond naturally, helpfully, "
+                "and conversationally.\n\n"
+                f"User persona: {persona_text}"
             )
 
-        # ----------------------------------------------------
-        # Extract only generated response
-        # ----------------------------------------------------
+        else:
 
-        generated_ids = output_ids[
-            :, inputs["input_ids"].shape[-1]:
+            system_instruction = (
+                "You are a friendly conversational assistant. "
+                "Respond naturally, helpfully, and appropriately "
+                "to the user's messages."
+            )
+
+        messages = [
+            {
+                "role": "system",
+                "content": system_instruction,
+            }
         ]
 
-        response = self.tokenizer.decode(
-            generated_ids[0],
-            skip_special_tokens=True,
-        ).strip()
+        # ----------------------------------------------------
+        # Add conversation history
+        # ----------------------------------------------------
 
-        # Safety fallback
-        if not response:
-            response = "I'm sorry, I couldn't generate a response."
+        for idx, text in enumerate(
+            raw_history
+        ):
 
-        return response
-
-
-# ============================================================
-# PORT
-# ============================================================
-
-def find_free_port(start_port=7860, max_attempts=10):
-
-    for port in range(
-        start_port,
-        start_port + max_attempts
-    ):
-
-        with socket.socket(
-            socket.AF_INET,
-            socket.SOCK_STREAM
-        ) as sock:
-
-            sock.setsockopt(
-                socket.SOL_SOCKET,
-                socket.SO_REUSEADDR,
-                1
-            )
-
-            try:
-
-                sock.bind(
-                    ("127.0.0.1", port)
-                )
-
-                return port
-
-            except OSError:
-
+            if not text:
                 continue
 
-    raise OSError(
-        f"No free port found between "
-        f"{start_port} and "
-        f"{start_port + max_attempts - 1}"
-    )
+            if idx % 2 == 0:
+
+                messages.append({
+                    "role": "user",
+                    "content": str(text),
+                })
+
+            else:
+
+                messages.append({
+                    "role": "assistant",
+                    "content": str(text),
+                })
+
+        # ----------------------------------------------------
+        # Call Hugging Face
+        # ----------------------------------------------------
+
+        try:
+
+            completion = (
+                self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    max_tokens=100,
+                    temperature=0.8,
+                    top_p=0.92,
+                )
+            )
+
+            response = (
+                completion
+                .choices[0]
+                .message
+                .content
+            )
+
+            if response is None:
+                response = ""
+
+            response = response.strip()
+
+        except Exception as exc:
+
+            print(
+                "Hugging Face inference error:"
+            )
+
+            print(
+                repr(exc)
+            )
+
+            return (
+                "I'm sorry, I couldn't generate a response "
+                "right now. Please try again."
+            )
+
+        # ----------------------------------------------------
+        # Empty-response fallback
+        # ----------------------------------------------------
+
+        if not response:
+
+            return (
+                "I'm sorry, I couldn't generate a response."
+            )
+
+        return response
 
 
 # ============================================================
@@ -284,41 +333,58 @@ def find_free_port(start_port=7860, max_attempts=10):
 def launch_app(system):
 
     with gr.Blocks(
-        title="Personalised Transformer Chatbot — Research Prototype"
+        title=(
+            "Personalised Transformer Chatbot "
+            "— Research Prototype"
+        )
     ) as demo:
+
+        # ====================================================
+        # HEADER
+        # ====================================================
 
         gr.Markdown(
             "## Personalised Transformer Chatbot "
             "(MSc Dissertation Research Prototype)"
         )
 
-        gr.Markdown(DISCLAIMER)
+        gr.Markdown(
+            DISCLAIMER
+        )
 
-        # ----------------------------------------------------
-        # State
-        # ----------------------------------------------------
+        # ====================================================
+        # SESSION STATE
+        # ====================================================
 
-        state_history = gr.State([])
+        state_history = gr.State(
+            []
+        )
 
         state_dialogue_state = gr.State(
             SimpleDialogueState()
         )
 
-        state_persona = gr.State([])
+        state_persona = gr.State(
+            []
+        )
 
-        # ----------------------------------------------------
-        # Layout
-        # ----------------------------------------------------
+        # ====================================================
+        # MAIN LAYOUT
+        # ====================================================
 
         with gr.Row():
 
             # =================================================
-            # CHAT
+            # LEFT: CHAT
             # =================================================
 
-            with gr.Column(scale=3):
+            with gr.Column(
+                scale=3
+            ):
 
-                gr.Markdown("### 1. Chat window")
+                gr.Markdown(
+                    "### 1. Chat window"
+                )
 
                 chatbot_ui = gr.Chatbot(
                     label="Conversation",
@@ -343,11 +409,13 @@ def launch_app(system):
                         "Clear conversation"
                     )
 
-                # ------------------------------------------------
-                # Feedback
-                # ------------------------------------------------
+                # =================================================
+                # FEEDBACK
+                # =================================================
 
-                gr.Markdown("### 4. Feedback")
+                gr.Markdown(
+                    "### 4. Feedback"
+                )
 
                 with gr.Row():
 
@@ -382,13 +450,17 @@ def launch_app(system):
                     "Submit feedback for last response"
                 )
 
-                feedback_status = gr.Markdown("")
+                feedback_status = gr.Markdown(
+                    ""
+                )
 
             # =================================================
-            # PROFILE
+            # RIGHT: PROFILE
             # =================================================
 
-            with gr.Column(scale=1):
+            with gr.Column(
+                scale=1
+            ):
 
                 gr.Markdown(
                     "### 2. User profile panel"
@@ -435,6 +507,10 @@ def launch_app(system):
                     interactive=True,
                 )
 
+                # =================================================
+                # PERSONA MODE
+                # =================================================
+
                 gr.Markdown(
                     "### 3. Persona mode"
                 )
@@ -447,15 +523,22 @@ def launch_app(system):
                     value=True,
                 )
 
-        # =====================================================
-        # HELPERS
-        # =====================================================
+        # ====================================================
+        # HISTORY DISPLAY HELPER
+        # ====================================================
 
-        def history_to_messages(history):
+        def history_to_messages(
+            history
+        ):
 
             messages = []
 
-            for idx, text in enumerate(history):
+            if not history:
+                return messages
+
+            for idx, text in enumerate(
+                history
+            ):
 
                 messages.append({
                     "role": (
@@ -463,14 +546,14 @@ def launch_app(system):
                         if idx % 2 == 0
                         else "assistant"
                     ),
-                    "content": text,
+                    "content": str(text),
                 })
 
             return messages
 
-        # =====================================================
-        # RESPONSE
-        # =====================================================
+        # ====================================================
+        # RESPONSE FUNCTION
+        # ====================================================
 
         def respond(
             user_message,
@@ -480,16 +563,32 @@ def launch_app(system):
             persona_enabled,
         ):
 
+            # ------------------------------------------------
+            # Empty message
+            # ------------------------------------------------
+
             if not user_message:
 
+                safe_history = (
+                    history
+                    if history
+                    else []
+                )
+
                 return (
-                    history_to_messages(history),
-                    history,
+                    history_to_messages(
+                        safe_history
+                    ),
+                    safe_history,
                     dialogue_state,
                     "",
                     0.5,
                     "",
                 )
+
+            # ------------------------------------------------
+            # Initialise state
+            # ------------------------------------------------
 
             if history is None:
                 history = []
@@ -513,12 +612,17 @@ def launch_app(system):
             )
 
             # ------------------------------------------------
-            # Generate
+            # Build conversation history
             # ------------------------------------------------
 
             raw_history = (
-                history + [user_message]
+                history
+                + [user_message]
             )
+
+            # ------------------------------------------------
+            # Generate response
+            # ------------------------------------------------
 
             reply = system.generate_response(
                 active_personas,
@@ -527,11 +631,11 @@ def launch_app(system):
             )
 
             # ------------------------------------------------
-            # Simple profile updates
+            # Update lightweight dialogue state
             # ------------------------------------------------
 
             dialogue_state.current_topic = (
-                user_message[:80]
+                str(user_message)[:80]
             )
 
             dialogue_state.emotional_tone = (
@@ -543,11 +647,12 @@ def launch_app(system):
             )
 
             # ------------------------------------------------
-            # New history
+            # Update history
             # ------------------------------------------------
 
             new_history = (
-                raw_history + [reply]
+                raw_history
+                + [reply]
             )
 
             display = history_to_messages(
@@ -563,24 +668,28 @@ def launch_app(system):
                 dialogue_state.emotional_tone,
             )
 
-        # =====================================================
-        # PERSONA
-        # =====================================================
+        # ====================================================
+        # PERSONA FUNCTION
+        # ====================================================
 
-        def set_persona(persona_text):
+        def set_persona(
+            persona_text
+        ):
 
             if not persona_text:
                 return []
 
             return [
                 sentence.strip()
-                for sentence in persona_text.split("\n")
+                for sentence in persona_text.split(
+                    "\n"
+                )
                 if sentence.strip()
             ]
 
-        # =====================================================
-        # CLEAR
-        # =====================================================
+        # ====================================================
+        # CLEAR CONVERSATION
+        # ====================================================
 
         def clear_conversation():
 
@@ -593,9 +702,9 @@ def launch_app(system):
                 "",
             )
 
-        # =====================================================
-        # FEEDBACK
-        # =====================================================
+        # ====================================================
+        # FEEDBACK FUNCTION
+        # ====================================================
 
         def submit_feedback(
             p_code,
@@ -605,11 +714,13 @@ def launch_app(system):
             comment,
         ):
 
-            turn_idx = (
-                len(history) // 2
-                if history
-                else 0
-            )
+            if not history:
+                turn_idx = 0
+            else:
+                turn_idx = (
+                    len(history)
+                    // 2
+                )
 
             return log_feedback(
                 p_code,
@@ -619,9 +730,9 @@ def launch_app(system):
                 comment,
             )
 
-        # =====================================================
-        # BUTTON EVENTS
-        # =====================================================
+        # ====================================================
+        # SEND BUTTON
+        # ====================================================
 
         send_btn.click(
             respond,
@@ -648,6 +759,10 @@ def launch_app(system):
             msg_box,
         )
 
+        # ====================================================
+        # ENTER KEY
+        # ====================================================
+
         msg_box.submit(
             respond,
 
@@ -673,11 +788,25 @@ def launch_app(system):
             msg_box,
         )
 
+        # ====================================================
+        # SET PERSONA
+        # ====================================================
+
         set_persona_btn.click(
             set_persona,
-            inputs=[persona_input],
-            outputs=[state_persona],
+
+            inputs=[
+                persona_input
+            ],
+
+            outputs=[
+                state_persona
+            ],
         )
+
+        # ====================================================
+        # CLEAR
+        # ====================================================
 
         clear_btn.click(
             clear_conversation,
@@ -691,6 +820,10 @@ def launch_app(system):
                 inferred_tone,
             ],
         )
+
+        # ====================================================
+        # FEEDBACK
+        # ====================================================
 
         feedback_btn.click(
             submit_feedback,
@@ -717,120 +850,88 @@ def launch_app(system):
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Launch the Personalised Transformer "
+            "Chatbot Gradio application."
+        )
+    )
 
     parser.add_argument(
         "--model_name",
         default=MODEL_NAME,
-        help="Hugging Face model ID",
-    )
-
-    parser.add_argument(
-        "--share",
-        action="store_true",
-        help="Use Gradio public URL sharing",
+        help=(
+            "Hugging Face model ID. "
+            "Defaults to HF_MODEL or the configured model."
+        ),
     )
 
     parser.add_argument(
         "--host",
         default=None,
-        help="Host/IP for Gradio",
+        help="Optional host override.",
     )
 
     parser.add_argument(
         "--port",
         type=int,
         default=None,
-        help="Port for Gradio",
+        help="Optional port override.",
     )
 
     args = parser.parse_args()
 
-    # --------------------------------------------------------
-    # Load model
-    # --------------------------------------------------------
+    # ========================================================
+    # INITIALISE MODEL CLIENT
+    # ========================================================
 
     system = HuggingFaceChatbot(
         model_name=args.model_name
     )
 
-    # --------------------------------------------------------
-    # Launch
-    # --------------------------------------------------------
+    # ========================================================
+    # BUILD APPLICATION
+    # ========================================================
 
-    demo = launch_app(system)
-
-    env_port = int(
-        os.environ.get("PORT", "0")
+    demo = launch_app(
+        system
     )
 
-    preferred_port = (
-        args.port
-        if args.port is not None
-        else (
-            env_port
-            if env_port > 0
-            else 0
+    # ========================================================
+    # RENDER CONFIGURATION
+    # ========================================================
+
+    # Render supplies PORT automatically.
+    # We use 10000 only as a local fallback.
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            args.port or 10000,
         )
     )
 
-    candidate_ports = (
-        [preferred_port]
-        if preferred_port > 0
-        else list(range(7860, 7875))
+    # Render requires the application to listen
+    # on 0.0.0.0 rather than 127.0.0.1.
+
+    host = os.environ.get(
+        "GRADIO_SERVER_NAME",
+        args.host or "0.0.0.0",
     )
 
-    if args.host:
+    print("=" * 70)
+    print("Starting Personalised Transformer Chatbot")
+    print(f"Host: {host}")
+    print(f"Port: {port}")
+    print(f"Model: {args.model_name}")
+    print("=" * 70)
 
-        server_name = args.host
+    # ========================================================
+    # START GRADIO
+    # ========================================================
 
-    elif env_port > 0:
-
-        server_name = os.environ.get(
-            "GRADIO_SERVER_NAME",
-            "0.0.0.0",
-        )
-
-    else:
-
-        server_name = os.environ.get(
-            "GRADIO_SERVER_NAME",
-            "127.0.0.1",
-        )
-
-    last_error = None
-
-    for port in candidate_ports:
-
-        try:
-
-            print(
-                f"Launching Gradio on "
-                f"http://{server_name}:{port}"
-            )
-
-            demo.launch(
-                share=args.share,
-                server_name=server_name,
-                server_port=port,
-            )
-
-            break
-
-        except OSError as exc:
-
-            last_error = exc
-
-            print(
-                f"Port {port} unavailable; "
-                f"trying next port."
-            )
-
-    else:
-
-        raise (
-            last_error
-            or OSError(
-                "Unable to launch Gradio"
-            )
-        )
+    demo.launch(
+        server_name=host,
+        server_port=port,
+        show_error=True,
+    )

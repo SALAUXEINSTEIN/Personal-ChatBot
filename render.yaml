@@ -1,7 +1,7 @@
 services:
   - type: web
     name: chatbot-project
-    runtime: python
+    env: python
     plan: free
     region: oregon
 
@@ -12,3 +12,9 @@ services:
     envVars:
       - key: PORT
         value: "10000"
+
+      - key: HF_MODEL
+        value: "sebastiantrbl/DialoGPT-finetuned-daily-dialog"
+
+      - key: HF_TOKEN
+        sync: false
