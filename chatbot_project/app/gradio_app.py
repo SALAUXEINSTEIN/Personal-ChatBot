@@ -204,127 +204,93 @@ class HuggingFaceChatbot:
     # GENERATE RESPONSE
     # ========================================================
 
-    def generate_response(
-        self,
-        persona_sentences,
-        raw_history,
-        persona_enabled=True,
-    ):
+def generate_response(
+    self,
+    persona_sentences,
+    raw_history,
+    persona_enabled=True,
+):
 
-        # ----------------------------------------------------
-        # Build system instruction
-        # ----------------------------------------------------
+    # ----------------------------------------------------
+    # Build prompt
+    # ----------------------------------------------------
 
-        if persona_enabled and persona_sentences:
+    prompt_parts = []
 
-            persona_text = " ".join(
-                persona_sentences
+    if persona_enabled and persona_sentences:
+
+        persona_text = " ".join(persona_sentences)
+
+        prompt_parts.append(
+            f"Persona: {persona_text}"
+        )
+
+    # Conversation
+    for idx, text in enumerate(raw_history):
+
+        if idx % 2 == 0:
+            prompt_parts.append(
+                f"User: {text}"
             )
-
-            system_instruction = (
-                "You are a personalised conversational assistant. "
-                "Use the user's persona information when it is relevant "
-                "to the conversation. Do not mention the persona explicitly "
-                "unless the user asks about it. Respond naturally, helpfully, "
-                "and conversationally.\n\n"
-                f"User persona: {persona_text}"
-            )
-
         else:
-
-            system_instruction = (
-                "You are a friendly conversational assistant. "
-                "Respond naturally, helpfully, and appropriately "
-                "to the user's messages."
+            prompt_parts.append(
+                f"Assistant: {text}"
             )
 
-        messages = [
-            {
-                "role": "system",
-                "content": system_instruction,
-            }
-        ]
+    prompt_parts.append("Assistant:")
 
-        # ----------------------------------------------------
-        # Add conversation history
-        # ----------------------------------------------------
+    prompt = "\n".join(prompt_parts)
 
-        for idx, text in enumerate(
-            raw_history
-        ):
+    print("=" * 60)
+    print("Sending request to Hugging Face")
+    print(f"Prompt: {prompt[-1000:]}")
+    print("=" * 60)
 
-            if not text:
-                continue
+    # ----------------------------------------------------
+    # Hugging Face text generation
+    # ----------------------------------------------------
 
-            if idx % 2 == 0:
+    try:
 
-                messages.append({
-                    "role": "user",
-                    "content": str(text),
-                })
+        response = self.client.text_generation(
+            prompt,
+            max_new_tokens=80,
+            temperature=0.8,
+            top_p=0.92,
+            top_k=50,
+            repetition_penalty=1.1,
+            return_full_text=False,
+        )
 
-            else:
+        response = response.strip()
 
-                messages.append({
-                    "role": "assistant",
-                    "content": str(text),
-                })
+        print("Hugging Face response:")
+        print(response)
 
-        # ----------------------------------------------------
-        # Call Hugging Face
-        # ----------------------------------------------------
+    except Exception as exc:
 
-        try:
+        print("=" * 60)
+        print("HUGGING FACE ERROR")
+        print(repr(exc))
+        print("=" * 60)
 
-            completion = (
-                self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    max_tokens=100,
-                    temperature=0.8,
-                    top_p=0.92,
-                )
-            )
+        return (
+            "Hugging Face could not generate a response. "
+            "Please check the Render logs."
+        )
 
-            response = (
-                completion
-                .choices[0]
-                .message
-                .content
-            )
+    # ----------------------------------------------------
+    # Fallback
+    # ----------------------------------------------------
 
-            if response is None:
-                response = ""
+    if not response:
 
-            response = response.strip()
+        return (
+            "The model returned an empty response. "
+            "Please try again."
+        )
 
-        except Exception as exc:
-
-            print(
-                "Hugging Face inference error:"
-            )
-
-            print(
-                repr(exc)
-            )
-
-            return (
-                "I'm sorry, I couldn't generate a response "
-                "right now. Please try again."
-            )
-
-        # ----------------------------------------------------
-        # Empty-response fallback
-        # ----------------------------------------------------
-
-        if not response:
-
-            return (
-                "I'm sorry, I couldn't generate a response."
-            )
-
-        return response
-
+    return response
 
 # ============================================================
 # GRADIO APPLICATION
