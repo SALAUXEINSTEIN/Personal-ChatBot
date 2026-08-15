@@ -1,11 +1,14 @@
 services:
   - type: web
     name: chatbot-project
-    env: python
+    runtime: python
     plan: free
     region: oregon
+
     buildCommand: "pip install --upgrade pip && pip install -r chatbot_project/requirements.txt"
-    startCommand: "python -u -m chatbot_project.app.gradio_app --quick_demo"
+
+    startCommand: "python -u -m chatbot_project.app.gradio_app"
+
     envVars:
       - key: PORT
         value: "10000"
