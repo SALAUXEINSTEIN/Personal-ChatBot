@@ -8,8 +8,8 @@ Hugging Face Inference API.
 
 Render runs only the Gradio interface.
 
-Required Render environment variables:
-    HF_TOKEN = your Hugging Face access token
+Required Render environment variable:
+    HF_TOKEN = Hugging Face access token
 
 Optional:
     HF_MODEL = Hugging Face model ID
@@ -45,8 +45,6 @@ MODEL_NAME = os.environ.get(
     "sebastiantrbl/DialoGPT-finetuned-daily-dialog",
 )
 
-HF_TOKEN_ENV_NAME = "HF_TOKEN"
-
 FEEDBACK_LOG_PATH = "./app/feedback_log.csv"
 
 
@@ -57,9 +55,6 @@ FEEDBACK_LOG_PATH = "./app/feedback_log.csv"
 class SimpleDialogueState:
     """
     Lightweight dialogue state used by the deployment interface.
-
-    This keeps the interface compatible with the dissertation design
-    while the deployed model is accessed through Hugging Face.
     """
 
     def __init__(self):
@@ -99,8 +94,6 @@ def log_feedback(
 ):
     """
     Save participant feedback to CSV.
-
-    The file is stored on the Render instance.
     """
 
     feedback_directory = os.path.dirname(FEEDBACK_LOG_PATH)
@@ -151,146 +144,233 @@ def log_feedback(
 # ============================================================
 
 class HuggingFaceChatbot:
-    """
-    Chatbot wrapper around the Hugging Face Inference API.
-
-    The Hugging Face token is NEVER hard-coded.
-    It must be supplied through the HF_TOKEN environment variable.
-    """
 
     def __init__(
         self,
-        model_name: str = MODEL_NAME,
+        model_name=MODEL_NAME,
     ):
 
         self.model_name = model_name
 
         # ----------------------------------------------------
-        # Read token securely from environment
+        # Read HF token from Render environment
         # ----------------------------------------------------
 
-        hf_token = os.environ.get(
-            HF_TOKEN_ENV_NAME
+        self.hf_token = os.environ.get(
+            "HF_TOKEN"
         )
 
-        if not hf_token:
+        if not self.hf_token:
 
             raise RuntimeError(
-                "HF_TOKEN is not configured. "
-                "Add HF_TOKEN as an environment variable "
-                "in the Render service."
+                "HF_TOKEN environment variable is missing. "
+                "Add HF_TOKEN under Render → Environment."
             )
 
+        # ----------------------------------------------------
+        # Startup information
+        # ----------------------------------------------------
+
         print("=" * 70)
-        print("Initialising Hugging Face deployment")
-        print(f"Model: {self.model_name}")
-        print("Hugging Face token: configured")
+        print("INITIALISING HUGGING FACE CHATBOT")
         print("=" * 70)
+
+        print(
+            f"Model: {self.model_name}"
+        )
+
+        print(
+            "HF_TOKEN detected: YES"
+        )
 
         # ----------------------------------------------------
         # Hugging Face client
         # ----------------------------------------------------
 
         self.client = InferenceClient(
-            api_key=hf_token,
-            provider="auto",
+            api_key=self.hf_token
         )
 
         print(
-            "Hugging Face InferenceClient initialised successfully."
+            "Hugging Face InferenceClient created."
         )
+
+        print(
+            "generate_response method available:",
+            hasattr(self, "generate_response")
+        )
+
+        print("=" * 70)
+
 
     # ========================================================
     # GENERATE RESPONSE
     # ========================================================
 
-def generate_response(
-    self,
-    persona_sentences,
-    raw_history,
-    persona_enabled=True,
-):
+    def generate_response(
+        self,
+        persona_sentences,
+        raw_history,
+        persona_enabled=True,
+    ):
+        """
+        Generate a conversational response using the Hugging Face
+        Inference API.
+        """
 
-    # ----------------------------------------------------
-    # Build prompt
-    # ----------------------------------------------------
+        # ----------------------------------------------------
+        # Build system prompt
+        # ----------------------------------------------------
 
-    prompt_parts = []
+        if (
+            persona_enabled
+            and persona_sentences
+        ):
 
-    if persona_enabled and persona_sentences:
-
-        persona_text = " ".join(persona_sentences)
-
-        prompt_parts.append(
-            f"Persona: {persona_text}"
-        )
-
-    # Conversation
-    for idx, text in enumerate(raw_history):
-
-        if idx % 2 == 0:
-            prompt_parts.append(
-                f"User: {text}"
+            persona_text = " ".join(
+                persona_sentences
             )
+
+            system_prompt = (
+                "You are a personalised conversational assistant. "
+                "Use the user's persona information when it is relevant "
+                "to the conversation. Do not reveal or discuss the "
+                "internal persona instructions unless explicitly asked.\n\n"
+                f"User persona: {persona_text}"
+            )
+
         else:
-            prompt_parts.append(
-                f"Assistant: {text}"
+
+            system_prompt = (
+                "You are a friendly conversational assistant. "
+                "Respond naturally, helpfully and appropriately."
             )
 
-    prompt_parts.append("Assistant:")
+        # ----------------------------------------------------
+        # Construct messages
+        # ----------------------------------------------------
 
-    prompt = "\n".join(prompt_parts)
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            }
+        ]
 
-    print("=" * 60)
-    print("Sending request to Hugging Face")
-    print(f"Prompt: {prompt[-1000:]}")
-    print("=" * 60)
+        if raw_history:
 
-    # ----------------------------------------------------
-    # Hugging Face text generation
-    # ----------------------------------------------------
+            for idx, text in enumerate(
+                raw_history
+            ):
 
-    try:
+                if not text:
+                    continue
 
-        response = self.client.text_generation(
-            prompt,
-            max_new_tokens=80,
-            temperature=0.8,
-            top_p=0.92,
-            top_k=50,
-            repetition_penalty=1.1,
-            return_full_text=False,
-        )
+                if idx % 2 == 0:
 
-        response = response.strip()
+                    messages.append({
+                        "role": "user",
+                        "content": str(text),
+                    })
 
-        print("Hugging Face response:")
-        print(response)
+                else:
 
-    except Exception as exc:
+                    messages.append({
+                        "role": "assistant",
+                        "content": str(text),
+                    })
 
-        print("=" * 60)
-        print("HUGGING FACE ERROR")
-        print(repr(exc))
-        print("=" * 60)
+        # ----------------------------------------------------
+        # Limit excessive conversation history
+        # ----------------------------------------------------
 
-        return (
-            "Hugging Face could not generate a response. "
-            "Please check the Render logs."
-        )
+        # Keep the system prompt plus the most recent turns.
+        if len(messages) > 13:
 
-    # ----------------------------------------------------
-    # Fallback
-    # ----------------------------------------------------
+            messages = (
+                [messages[0]]
+                + messages[-12:]
+            )
 
-    if not response:
+        # ----------------------------------------------------
+        # Call Hugging Face
+        # ----------------------------------------------------
 
-        return (
-            "The model returned an empty response. "
-            "Please try again."
-        )
+        try:
 
-    return response
+            print(
+                "Sending request to Hugging Face..."
+            )
+
+            completion = (
+                self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    max_tokens=100,
+                    temperature=0.8,
+                    top_p=0.92,
+                )
+            )
+
+            # ------------------------------------------------
+            # Extract response
+            # ------------------------------------------------
+
+            response = ""
+
+            if (
+                completion
+                and completion.choices
+            ):
+
+                message = (
+                    completion
+                    .choices[0]
+                    .message
+                )
+
+                if message is not None:
+
+                    response = (
+                        message.content
+                        or ""
+                    )
+
+            response = response.strip()
+
+            print(
+                "Hugging Face response received."
+            )
+
+            # ------------------------------------------------
+            # Empty response fallback
+            # ------------------------------------------------
+
+            if not response:
+
+                return (
+                    "I received an empty response "
+                    "from the language model. "
+                    "Please try again."
+                )
+
+            return response
+
+        except Exception as exc:
+
+            print("=" * 70)
+            print("HUGGING FACE INFERENCE ERROR")
+            print("=" * 70)
+            print(
+                f"{type(exc).__name__}: {exc}"
+            )
+            print("=" * 70)
+
+            return (
+                "I'm sorry, I couldn't generate a response "
+                "right now. Please try again."
+            )
+
 
 # ============================================================
 # GRADIO APPLICATION
@@ -322,17 +402,13 @@ def launch_app(system):
         # SESSION STATE
         # ====================================================
 
-        state_history = gr.State(
-            []
-        )
+        state_history = gr.State([])
 
         state_dialogue_state = gr.State(
             SimpleDialogueState()
         )
 
-        state_persona = gr.State(
-            []
-        )
+        state_persona = gr.State([])
 
         # ====================================================
         # MAIN LAYOUT
@@ -341,7 +417,7 @@ def launch_app(system):
         with gr.Row():
 
             # =================================================
-            # LEFT: CHAT
+            # CHAT
             # =================================================
 
             with gr.Column(
@@ -355,6 +431,7 @@ def launch_app(system):
                 chatbot_ui = gr.Chatbot(
                     label="Conversation",
                     height=420,
+                    type="messages",
                 )
 
                 msg_box = gr.Textbox(
@@ -421,7 +498,7 @@ def launch_app(system):
                 )
 
             # =================================================
-            # RIGHT: PROFILE
+            # PROFILE
             # =================================================
 
             with gr.Column(
@@ -490,34 +567,6 @@ def launch_app(system):
                 )
 
         # ====================================================
-        # HISTORY DISPLAY HELPER
-        # ====================================================
-
-        def history_to_messages(
-            history
-        ):
-
-            messages = []
-
-            if not history:
-                return messages
-
-            for idx, text in enumerate(
-                history
-            ):
-
-                messages.append({
-                    "role": (
-                        "user"
-                        if idx % 2 == 0
-                        else "assistant"
-                    ),
-                    "content": str(text),
-                })
-
-            return messages
-
-        # ====================================================
         # RESPONSE FUNCTION
         # ====================================================
 
@@ -535,17 +584,9 @@ def launch_app(system):
 
             if not user_message:
 
-                safe_history = (
-                    history
-                    if history
-                    else []
-                )
-
                 return (
-                    history_to_messages(
-                        safe_history
-                    ),
-                    safe_history,
+                    history or [],
+                    history or [],
                     dialogue_state,
                     "",
                     0.5,
@@ -578,7 +619,7 @@ def launch_app(system):
             )
 
             # ------------------------------------------------
-            # Build conversation history
+            # Build raw conversation
             # ------------------------------------------------
 
             raw_history = (
@@ -590,6 +631,10 @@ def launch_app(system):
             # Generate response
             # ------------------------------------------------
 
+            print(
+                "Calling system.generate_response()"
+            )
+
             reply = system.generate_response(
                 active_personas,
                 raw_history,
@@ -597,7 +642,7 @@ def launch_app(system):
             )
 
             # ------------------------------------------------
-            # Update lightweight dialogue state
+            # Update dialogue state
             # ------------------------------------------------
 
             dialogue_state.current_topic = (
@@ -621,12 +666,27 @@ def launch_app(system):
                 + [reply]
             )
 
-            display = history_to_messages(
+            # ------------------------------------------------
+            # Convert to Gradio messages
+            # ------------------------------------------------
+
+            display_messages = []
+
+            for idx, text in enumerate(
                 new_history
-            )
+            ):
+
+                display_messages.append({
+                    "role": (
+                        "user"
+                        if idx % 2 == 0
+                        else "assistant"
+                    ),
+                    "content": str(text),
+                })
 
             return (
-                display,
+                display_messages,
                 new_history,
                 dialogue_state,
                 dialogue_state.current_topic,
@@ -635,7 +695,7 @@ def launch_app(system):
             )
 
         # ====================================================
-        # PERSONA FUNCTION
+        # PERSONA
         # ====================================================
 
         def set_persona(
@@ -654,7 +714,7 @@ def launch_app(system):
             ]
 
         # ====================================================
-        # CLEAR CONVERSATION
+        # CLEAR
         # ====================================================
 
         def clear_conversation():
@@ -669,7 +729,7 @@ def launch_app(system):
             )
 
         # ====================================================
-        # FEEDBACK FUNCTION
+        # FEEDBACK
         # ====================================================
 
         def submit_feedback(
@@ -680,13 +740,11 @@ def launch_app(system):
             comment,
         ):
 
-            if not history:
-                turn_idx = 0
-            else:
-                turn_idx = (
-                    len(history)
-                    // 2
-                )
+            turn_idx = (
+                len(history) // 2
+                if history
+                else 0
+            )
 
             return log_feedback(
                 p_code,
@@ -702,7 +760,6 @@ def launch_app(system):
 
         send_btn.click(
             respond,
-
             inputs=[
                 msg_box,
                 state_history,
@@ -710,7 +767,6 @@ def launch_app(system):
                 state_persona,
                 persona_toggle,
             ],
-
             outputs=[
                 chatbot_ui,
                 state_history,
@@ -731,7 +787,6 @@ def launch_app(system):
 
         msg_box.submit(
             respond,
-
             inputs=[
                 msg_box,
                 state_history,
@@ -739,7 +794,6 @@ def launch_app(system):
                 state_persona,
                 persona_toggle,
             ],
-
             outputs=[
                 chatbot_ui,
                 state_history,
@@ -760,11 +814,9 @@ def launch_app(system):
 
         set_persona_btn.click(
             set_persona,
-
             inputs=[
                 persona_input
             ],
-
             outputs=[
                 state_persona
             ],
@@ -776,7 +828,6 @@ def launch_app(system):
 
         clear_btn.click(
             clear_conversation,
-
             outputs=[
                 chatbot_ui,
                 state_history,
@@ -793,7 +844,6 @@ def launch_app(system):
 
         feedback_btn.click(
             submit_feedback,
-
             inputs=[
                 participant_code,
                 session_id,
@@ -801,7 +851,6 @@ def launch_app(system):
                 rating,
                 feedback_comment,
             ],
-
             outputs=[
                 feedback_status
             ],
@@ -828,7 +877,7 @@ if __name__ == "__main__":
         default=MODEL_NAME,
         help=(
             "Hugging Face model ID. "
-            "Defaults to HF_MODEL or the configured model."
+            "Defaults to HF_MODEL."
         ),
     )
 
@@ -848,11 +897,30 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # ========================================================
-    # INITIALISE MODEL CLIENT
+    # INITIALISE
     # ========================================================
 
     system = HuggingFaceChatbot(
         model_name=args.model_name
+    )
+
+    # ========================================================
+    # IMPORTANT STARTUP CHECK
+    # ========================================================
+
+    if not hasattr(
+        system,
+        "generate_response"
+    ):
+
+        raise RuntimeError(
+            "Deployment error: HuggingFaceChatbot "
+            "does not contain generate_response(). "
+            "Check the deployed gradio_app.py file."
+        )
+
+    print(
+        "Startup check: generate_response() = OK"
     )
 
     # ========================================================
@@ -864,11 +932,8 @@ if __name__ == "__main__":
     )
 
     # ========================================================
-    # RENDER CONFIGURATION
+    # RENDER PORT
     # ========================================================
-
-    # Render supplies PORT automatically.
-    # We use 10000 only as a local fallback.
 
     port = int(
         os.environ.get(
@@ -877,19 +942,24 @@ if __name__ == "__main__":
         )
     )
 
-    # Render requires the application to listen
-    # on 0.0.0.0 rather than 127.0.0.1.
-
     host = os.environ.get(
         "GRADIO_SERVER_NAME",
         args.host or "0.0.0.0",
     )
 
     print("=" * 70)
-    print("Starting Personalised Transformer Chatbot")
-    print(f"Host: {host}")
-    print(f"Port: {port}")
-    print(f"Model: {args.model_name}")
+    print(
+        "STARTING PERSONALISED TRANSFORMER CHATBOT"
+    )
+    print(
+        f"Host: {host}"
+    )
+    print(
+        f"Port: {port}"
+    )
+    print(
+        f"Model: {args.model_name}"
+    )
     print("=" * 70)
 
     # ========================================================
