@@ -1,7 +1,7 @@
-gradio
+gradio>=5.0
 transformers
 torch
-huggingface_hub
+huggingface_hub>=0.30.0
 accelerate
 sentencepiece
 safetensors
