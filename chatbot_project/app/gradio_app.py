@@ -358,17 +358,18 @@ class HuggingFaceChatbot:
 
         except Exception as exc:
 
-            print("=" * 70)
+            import traceback
+
+            error_message = traceback.format_exc()
+
+            print("=" * 80)
             print("HUGGING FACE INFERENCE ERROR")
-            print("=" * 70)
-            print(
-                f"{type(exc).__name__}: {exc}"
-            )
-            print("=" * 70)
+            print(error_message)
+            print("=" * 80)
 
             return (
-                "I'm sorry, I couldn't generate a response "
-                "right now. Please try again."
+                "DEBUG ERROR:\n\n"
+                f"{type(exc).__name__}: {exc}"
             )
 
 
