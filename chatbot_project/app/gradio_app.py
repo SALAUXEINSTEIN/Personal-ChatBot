@@ -42,8 +42,15 @@ from huggingface_hub import InferenceClient
 
 MODEL_NAME = os.environ.get(
     "HF_MODEL",
-    "sebastiantrbl/DialoGPT-finetuned-daily-dialog",
+    "Qwen/Qwen2.5-7B-Instruct",
 )
+
+HF_PROVIDER = os.environ.get(
+    "HF_PROVIDER",
+    "together",
+)
+
+HF_TOKEN_ENV_NAME = "HF_TOKEN"
 
 FEEDBACK_LOG_PATH = "./app/feedback_log.csv"
 
@@ -157,7 +164,7 @@ class HuggingFaceChatbot:
         # ----------------------------------------------------
 
         self.hf_token = os.environ.get(
-            "HF_TOKEN"
+            HF_TOKEN_ENV_NAME
         )
 
         if not self.hf_token:
@@ -175,20 +182,17 @@ class HuggingFaceChatbot:
         print("INITIALISING HUGGING FACE CHATBOT")
         print("=" * 70)
 
-        print(
-            f"Model: {self.model_name}"
-        )
-
-        print(
-            "HF_TOKEN detected: YES"
-        )
+        print(f"Model: {self.model_name}")
+        print(f"Provider: {HF_PROVIDER}")
+        print("HF_TOKEN detected: YES")
 
         # ----------------------------------------------------
         # Hugging Face client
         # ----------------------------------------------------
 
         self.client = InferenceClient(
-            api_key=self.hf_token
+            api_key=self.hf_token,
+            provider=HF_PROVIDER,
         )
 
         print(
@@ -302,14 +306,16 @@ class HuggingFaceChatbot:
                 "Sending request to Hugging Face..."
             )
 
-            completion = (
-                self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    max_tokens=100,
-                    temperature=0.8,
-                    top_p=0.92,
-                )
+            print(
+                f"Provider: {HF_PROVIDER}"
+            )
+
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=150,
+                temperature=0.7,
+                top_p=0.9,
             )
 
             # ------------------------------------------------
